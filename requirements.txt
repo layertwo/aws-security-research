@@ -1,6 +1,6 @@
 aws-cdk-lib==2.41.0
 constructs==10.1.103
-boto3==1.24.70
+boto3==1.24.73
 black==22.8.0
 isort==5.10.1
 mypy==0.971
