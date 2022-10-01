@@ -62,10 +62,13 @@ class MercuryStack(Stack):
             min_capacity=1,
             max_capacity=2,
             vpc=self.vpc,
+            cooldown=Duration.seconds(30),
             instance_monitoring=autoscaling.Monitoring.BASIC,
             max_instance_lifetime=Duration.days(1),
             update_policy=autoscaling.UpdatePolicy.replacing_update(),
             security_group=self.sensor_security_group,
+            # set a spot price to keep costs low
+            spot_price="0.007",
         )
         asg.add_to_role_policy(self.cw_metric_write_statement)
         return asg
@@ -84,6 +87,7 @@ class MercuryStack(Stack):
         script_name = "mercury_sensor_setup.sh"
         user_data = ec2.UserData.for_linux()
         user_data.add_commands(
+            f'export REGION="{self.region.lower()}"',
             f'export FIREHOSE="{self.firehose.delivery_stream_name}"',
             f"aws s3 cp {self.installables_bucket.s3_url_for_object(key=script_name)} /tmp/{script_name}",
             f"cat /tmp/{script_name} | sh",

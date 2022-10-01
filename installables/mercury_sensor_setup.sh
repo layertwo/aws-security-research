@@ -17,28 +17,27 @@ sed -i 's/cpu/1/g' /etc/mercury/mercury.cfg
 curl https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh | sh
 sudo yum --assumeyes install fluent-bit
 
-FLUENT_CONF="
->[INPUT]
->    Name tail
->    tag mercury.data
->    Path /usr/local/var/mercury/fingerprint.json*
->    Parser json
+cat > /etc/fluent-bit/fluent-bit.conf << EOL
+[INPUT]
+    Name tail
+    tag mercury.data
+    Path /usr/local/var/mercury/fingerprint.json*
+    Parser json
 
->[OUTPUT]
->    Name  kinesis_firehose
->    Match mercury.*
->    region us-west-2
->    delivery_stream $FIREHOSE"
+[OUTPUT]
+    Name  kinesis_firehose
+    Match mercury.*
+    region $REGION
+    delivery_stream $FIREHOSE
+EOL
 
-PARSER_CONF="
->[PARSER]
->    Name   json
->    Format json
->    Time_Key event_start
->    Time_Format %s.%6"
-
-echo $FLUENT_CONF > /etc/fluent-bit/fluent-bit.conf
-echo $PARSER_CONF > /etc/fluent-bit/parsers.conf
+cat > /etc/fluent-bit/parsers.conf << EOL
+[PARSER]
+    Name   json
+    Format json
+    Time_Key event_start
+    Time_Format %s.%6"
+EOL
 
 # sleep before starting services
 sleep 5

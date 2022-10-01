@@ -129,3 +129,4 @@ dmypy.json
 
 # AWS CDK files
 cdk.out/
+cdk.context.json
