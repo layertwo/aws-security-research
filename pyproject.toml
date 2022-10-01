@@ -10,3 +10,9 @@ force_grid_wrap = 0
 use_parentheses = true
 ensure_newline_before_comments = true
 skip = ["cdk.out", "venv"]
+
+[tool.flake8]
+extend-ignore = ["E203"]
+exclude = [".git", "venv", "cdk.out", "__pycache__"]
+max-complexity = 10
+max-line-length = 100

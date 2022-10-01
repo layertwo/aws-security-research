@@ -9,5 +9,5 @@ app = cdk.App()
 env = cdk.Environment(
     account=os.environ["CDK_DEFAULT_ACCOUNT"], region=os.environ["CDK_DEFAULT_REGION"]
 )
-MercuryStack(app, "MercuryStack")
+MercuryStack(app, "MercuryStack", env=env)
 app.synth()
