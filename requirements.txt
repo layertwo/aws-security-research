@@ -1,7 +1,7 @@
 aws-cdk-lib==2.50.0
 aws-cdk.aws-kinesisfirehose-alpha==2.50.0a0
 aws-cdk.aws-kinesisfirehose-destinations-alpha==2.50.0a0
-constructs==10.1.118
+constructs==10.1.149
 black==22.10.0
 isort==5.10.1
 pyproject-flake8==5.0.4.post1
