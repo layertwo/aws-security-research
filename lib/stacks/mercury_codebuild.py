@@ -4,6 +4,7 @@ from aws_cdk.aws_codebuild import (
     BuildEnvironment,
     BuildSpec,
     Cache,
+    ComputeType,
     GitHubSourceCredentials,
     LinuxBuildImage,
     LocalCacheMode,
@@ -72,7 +73,9 @@ class MercuryCodeBuild(Stack):
 
     @property
     def build_environment(self) -> BuildEnvironment:
-        return BuildEnvironment(build_image=LinuxBuildImage.AMAZON_LINUX_2_4)
+        return BuildEnvironment(
+            build_image=LinuxBuildImage.AMAZON_LINUX_2_ARM_2, compute_type=ComputeType.SMALL
+        )
 
     @property
     def source(self) -> Source:
