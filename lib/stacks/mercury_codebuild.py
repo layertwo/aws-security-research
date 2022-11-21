@@ -1,20 +1,20 @@
-from aws_cdk import Duration, RemovalPolicy, Stack
+from typing import Dict, List
+
+from aws_cdk import Duration, Stack
 from aws_cdk.aws_codebuild import (
     Artifacts,
     BuildEnvironment,
     BuildSpec,
     Cache,
     ComputeType,
-    GitHubSourceCredentials,
     LinuxBuildImage,
     LocalCacheMode,
     Project,
     Source,
 )
-from aws_cdk.aws_codedeploy import ServerApplication
 from aws_cdk.aws_events import Rule, Schedule
 from aws_cdk.aws_events_targets import CodeBuildProject
-from aws_cdk.aws_s3 import BlockPublicAccess, LifecycleRule, StorageClass, Transition
+from aws_cdk.aws_s3 import LifecycleRule, StorageClass, Transition
 from constructs import Construct
 
 from lib.aws_common.s3 import SecureBucket
@@ -25,7 +25,7 @@ class MercuryCodeBuild(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         self.bucket = self.build_artifacts_bucket()
-        self.project = self.build_project()
+        self.projects = self.build_projects()
         self.rule = self.build_project_rule()
 
     def build_artifacts_bucket(self) -> SecureBucket:
@@ -51,31 +51,34 @@ class MercuryCodeBuild(Stack):
             "MercuryCodeBuildRule",
             rule_name="mercury-codebuild-rule",
             schedule=Schedule.rate(Duration.days(7)),
-            targets=[CodeBuildProject(self.project)],
+            targets=[CodeBuildProject(proj) for proj in self.projects],
         )
 
-    def build_project(self) -> Project:
-        return Project(
-            self,
-            "MercuryProject",
-            build_spec=self.build_spec,
-            source=self.source,
-            concurrent_build_limit=1,
-            environment=self.build_environment,
-            project_name="mercury-codebuild",
-            cache=Cache.local(LocalCacheMode.SOURCE),
-            artifacts=Artifacts.s3(
-                bucket=self.bucket,
-                include_build_id=False,
-                package_zip=False,
-            ),
-        )
+    def build_projects(self) -> List[Project]:
+        environments: Dict[str, LinuxBuildImage] = {
+            "x86": LinuxBuildImage.AMAZON_LINUX_2_4,
+            "arm": LinuxBuildImage.AMAZON_LINUX_2_ARM_2,
+        }
 
-    @property
-    def build_environment(self) -> BuildEnvironment:
-        return BuildEnvironment(
-            build_image=LinuxBuildImage.AMAZON_LINUX_2_ARM_2, compute_type=ComputeType.SMALL
-        )
+        projects = []
+        for arch, image in environments.items():
+            proj = Project(
+                self,
+                f"MercuryProject{arch.capitalize()}",
+                build_spec=self.build_spec,
+                source=self.source,
+                concurrent_build_limit=1,
+                environment=BuildEnvironment(build_image=image, compute_type=ComputeType.SMALL),
+                project_name=f"mercury-codebuild-{arch}",
+                cache=Cache.local(LocalCacheMode.SOURCE),
+                artifacts=Artifacts.s3(
+                    bucket=self.bucket,
+                    include_build_id=False,
+                    package_zip=False,
+                ),
+            )
+            projects.append(proj)
+        return projects
 
     @property
     def source(self) -> Source:
@@ -110,8 +113,8 @@ class MercuryCodeBuild(Stack):
                     },
                     "build": {
                         "commands": [
-                            f"./configure CC=$CC CXX=$CXX",
-                            f"make CC=$CC CXX=$CXX V=s",
+                            "./configure CC=$CC CXX=$CXX",
+                            "make CC=$CC CXX=$CXX V=s",
                         ]
                     },
                     "post_build": {
