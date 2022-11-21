@@ -1,13 +1,11 @@
 from typing import Any
 
-from aws_cdk import aws_ec2 as ec2
+from aws_cdk.aws_ec2 import SecurityGroup, Vpc
 from constructs import Construct
 
 
-def build_security_group(
-    scope: Construct, vpc: ec2.Vpc, name: str, **kwargs: Any
-) -> ec2.SecurityGroup:
-    return ec2.SecurityGroup(
+def build_security_group(scope: Construct, vpc: Vpc, name: str, **kwargs: Any) -> SecurityGroup:
+    return SecurityGroup(
         scope,
         f"{name}-sg",
         vpc=vpc,

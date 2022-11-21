@@ -3,7 +3,7 @@ import os
 
 import aws_cdk as cdk
 
-from lib.stacks import MercuryStack, MercuryCodeBuild
+from lib.stacks import MercuryCodeBuild, MercuryStack
 
 app = cdk.App()
 env = cdk.Environment(

@@ -10,11 +10,13 @@ from aws_cdk.aws_codebuild import (
     Project,
     Source,
 )
+from aws_cdk.aws_codedeploy import ServerApplication
 from aws_cdk.aws_events import Rule, Schedule
 from aws_cdk.aws_events_targets import CodeBuildProject
-from aws_cdk.aws_codedeploy import ServerApplication
-from aws_cdk.aws_s3 import BlockPublicAccess, Bucket, LifecycleRule, StorageClass, Transition
+from aws_cdk.aws_s3 import BlockPublicAccess, LifecycleRule, StorageClass, Transition
 from constructs import Construct
+
+from lib.aws_common.s3 import SecureBucket
 
 
 class MercuryCodeBuild(Stack):
@@ -25,14 +27,11 @@ class MercuryCodeBuild(Stack):
         self.project = self.build_project()
         self.rule = self.build_project_rule()
 
-    def build_artifacts_bucket(self) -> Bucket:
-        return Bucket(
+    def build_artifacts_bucket(self) -> SecureBucket:
+        return SecureBucket(
             self,
-            "MercuryArtifactBucket",
+            bucket_id="MercuryArtifactBucket",
             bucket_name="mercury-codebuild-artifacts",
-            enforce_ssl=True,
-            block_public_access=BlockPublicAccess.BLOCK_ALL,
-            removal_policy=RemovalPolicy.RETAIN,
             lifecycle_rules=[
                 LifecycleRule(
                     transitions=[
@@ -68,7 +67,7 @@ class MercuryCodeBuild(Stack):
                 bucket=self.bucket,
                 include_build_id=False,
                 package_zip=False,
-            )
+            ),
         )
 
     @property
