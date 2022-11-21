@@ -6,7 +6,9 @@ from constructs import Construct
 
 
 class SecureBucket(Bucket):
-    def __init__(self, scope, bucket_id, bucket_name: Optional[str] = None, **kwargs: Any):
+    def __init__(
+        self, scope: Construct, bucket_id, bucket_name: Optional[str] = None, **kwargs: Any
+    ):
         super().__init__(
             scope,
             bucket_id,
