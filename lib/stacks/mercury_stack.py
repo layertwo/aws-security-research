@@ -1,11 +1,21 @@
 from functools import cached_property
 
 from aws_cdk import Duration, Stack
-from aws_cdk.aws_autoscaling import AutoScalingGroup, Monitoring, UpdatePolicy
+from aws_cdk.aws_autoscaling import (
+    ApplyCloudFormationInitOptions,
+    AutoScalingGroup,
+    Monitoring,
+    Signals,
+    UpdatePolicy,
+)
 from aws_cdk.aws_ec2 import (
     AmazonLinuxCpuType,
     AmazonLinuxGeneration,
     AmazonLinuxKernel,
+    CloudFormationInit,
+    InitCommand,
+    InitFile,
+    InitPackage,
     InstanceType,
     MachineImage,
     Peer,
@@ -28,20 +38,22 @@ from lib.aws_common.s3 import SecureBucket
 
 
 class MercuryStack(Stack):
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+    def __init__(
+        self, scope: Construct, construct_id: str, artifacts_bucket: SecureBucket, **kwargs
+    ) -> None:
         super().__init__(scope, construct_id, **kwargs)
         self.name = "Mercury"
 
         # build s3 buckets
-        self.installables_bucket = self.build_installables_bucket()
         self.datalake_bucket = self.build_datalake_bucket()
+        self.artifacts_bucket = artifacts_bucket
 
         # build firehose
         self.firehose = self.build_firehose_stream()
 
         # build autoscaling group
         self.asg = self.build_asg()
-        self.installables_bucket.grant_read(self.asg)
+        artifacts_bucket.grant_read(self.asg)
         self.firehose.grant_put_records(self.asg)
 
     @cached_property
@@ -82,6 +94,8 @@ class MercuryStack(Stack):
             security_group=self.sensor_security_group,
             # set a spot price to keep costs low
             spot_price="0.007",
+            init=self.instance_init_config,
+            signals=Signals.wait_for_all(timeout=Duration.minutes(15)),
         )
         asg.add_to_role_policy(self.cw_metric_write_statement)
         return asg
@@ -92,19 +106,60 @@ class MercuryStack(Stack):
             generation=AmazonLinuxGeneration.AMAZON_LINUX_2,
             cpu_type=AmazonLinuxCpuType.ARM_64,
             kernel=AmazonLinuxKernel.KERNEL5_X,
-            user_data=self.mercury_user_data,
+
         )
 
     @property
+    def instance_init_config(self) -> CloudFormationInit:
+        return CloudFormationInit.from_elements(
+            InitCommand.shell_command(
+                "curl https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh | sh"
+            ),
+            InitPackage.rpm("fluent-bit"),
+            InitFile.from_string("/etc/fluent-bit/fluent-bit.conf", self.fluent_bit_config),
+            InitFile.from_string("/etc/fluent-bit/parsers.conf", self.fluent_bit_parser),
+        )
+
+    @property
+    def fluent_bit_config(self) -> str:
+        # /etc/fluent-bit/fluent-bit.conf << EOL
+        return f"""
+        [INPUT]
+            Name tail
+            tag mercury.data
+            Path /usr/local/var/mercury/fingerprint.json*
+            Parser json
+
+        [OUTPUT]
+            Name  kinesis_firehose
+            Match mercury.*
+            region {self.region}
+            delivery_stream {self.firehose.delivery_stream_name}
+        """
+
+    @property
+    def fluent_bit_parser(self) -> str:
+        # /etc/fluent-bit/parsers.conf
+        return """[PARSER]
+            Name   json
+            Format json
+            Time_Key event_start
+            Time_Format %s.%6"
+        """
+
+    @property
     def mercury_user_data(self) -> UserData:
-        script_name = "mercury_sensor_setup.sh"
+        # TODO set this to be the latest build from codebuild
+        rpm_name = "mercury_sensor_setup.sh"
         user_data = UserData.for_linux()
         user_data.add_commands(
             f'export REGION="{self.region}"',
             f'export FIREHOSE="{self.firehose.delivery_stream_name}"',
-            f"aws s3 cp {self.installables_bucket.s3_url_for_object(key=script_name)} /tmp/{script_name}",
-            f"cat /tmp/{script_name} | sh",
+            f"aws s3 cp {self.artifacts_bucket.s3_url_for_object(key=rpm_name)} /tmp/{rpm_name}",
         )
+        with open("installables/mercury_sensor_setup.sh") as fp:
+            for line in fp.read().splitlines():
+                user_data.add_commands(line)
         return user_data
 
     @property
@@ -130,20 +185,6 @@ class MercuryStack(Stack):
                 )
             ],
         )
-
-    def build_installables_bucket(self) -> Bucket:
-        """Build S3 bucket to store installation files for ec2 instances"""
-        bucket = SecureBucket(
-            self,
-            bucket_id=f"{self.name.lower()}-sensor-installables-{self.region}",
-        )
-        BucketDeployment(
-            self,
-            f"{self.name.lower()}SensorInstallableDeployment",
-            sources=[Source.asset("./installables/")],
-            destination_bucket=bucket,
-        )
-        return bucket
 
     def build_datalake_bucket(self) -> Bucket:
         """Build S3 bucket to for sensor datalake"""
