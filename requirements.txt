@@ -1,5 +1,5 @@
 aws-cdk-lib==2.63.0
-aws-cdk.aws-kinesisfirehose-alpha==2.63.0a0
+aws-cdk.aws-kinesisfirehose-alpha==2.66.1a0
 aws-cdk.aws-kinesisfirehose-destinations-alpha==2.63.0a0
 constructs==10.1.237
 black==22.12.0
