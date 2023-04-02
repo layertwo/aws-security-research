@@ -64,7 +64,7 @@ class MercuryStack(Stack):
                     cidr_mask=24,
                 )
             ],
-            max_azs=3,
+            max_azs=99,
         )
 
     @property
