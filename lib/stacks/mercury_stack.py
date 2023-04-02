@@ -1,13 +1,7 @@
 from functools import cached_property
 
 from aws_cdk import Duration, Stack
-from aws_cdk.aws_autoscaling import (
-    ApplyCloudFormationInitOptions,
-    AutoScalingGroup,
-    Monitoring,
-    Signals,
-    UpdatePolicy,
-)
+from aws_cdk.aws_autoscaling import AutoScalingGroup, Monitoring, Signals, UpdatePolicy
 from aws_cdk.aws_ec2 import (
     AmazonLinuxCpuType,
     AmazonLinuxGeneration,
@@ -15,8 +9,10 @@ from aws_cdk.aws_ec2 import (
     CloudFormationInit,
     InitCommand,
     InitFile,
-    InitPackage,
+    InitService,
     InstanceType,
+    LaunchTemplate,
+    LaunchTemplateSpotOptions,
     MachineImage,
     Peer,
     Port,
@@ -26,11 +22,10 @@ from aws_cdk.aws_ec2 import (
     UserData,
     Vpc,
 )
-from aws_cdk.aws_iam import PolicyStatement
+from aws_cdk.aws_iam import PolicyStatement, Role, ServicePrincipal
 from aws_cdk.aws_kinesisfirehose_alpha import DeliveryStream
 from aws_cdk.aws_kinesisfirehose_destinations_alpha import Compression, S3Bucket
 from aws_cdk.aws_s3 import Bucket
-from aws_cdk.aws_s3_deployment import BucketDeployment, Source
 from constructs import Construct
 
 from lib.aws_common.ec2 import build_security_group
@@ -44,6 +39,7 @@ class MercuryStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
         self.name = "Mercury"
 
+        self.instance_role = self.build_instance_role()
         # build s3 buckets
         self.datalake_bucket = self.build_datalake_bucket()
         self.artifacts_bucket = artifacts_bucket
@@ -53,8 +49,8 @@ class MercuryStack(Stack):
 
         # build autoscaling group
         self.asg = self.build_asg()
-        artifacts_bucket.grant_read(self.asg)
-        self.firehose.grant_put_records(self.asg)
+        artifacts_bucket.grant_read(self.instance_role)
+        self.firehose.grant_put_records(self.instance_role)
 
     @cached_property
     def vpc(self) -> Vpc:
@@ -82,18 +78,14 @@ class MercuryStack(Stack):
         asg = AutoScalingGroup(
             self,
             f"{self.name}AutoScalingGroup",
-            instance_type=InstanceType("t4g.small"),
-            machine_image=self.mercury_machine_image,
             min_capacity=1,
             max_capacity=2,
             vpc=self.vpc,
+            launch_template=self.launch_template,
             cooldown=Duration.seconds(30),
             instance_monitoring=Monitoring.BASIC,
             max_instance_lifetime=Duration.days(1),
-            update_policy=UpdatePolicy.replacing_update(),
-            security_group=self.sensor_security_group,
-            # set a spot price to keep costs low
-            spot_price="0.007",
+            update_policy=UpdatePolicy.rolling_update(min_success_percentage=0),
             init=self.instance_init_config,
             signals=Signals.wait_for_all(timeout=Duration.minutes(15)),
         )
@@ -101,23 +93,57 @@ class MercuryStack(Stack):
         return asg
 
     @property
+    def launch_template(self) -> LaunchTemplate:
+        return LaunchTemplate(
+            self,
+            f"{self.name}LaunchTemplate",
+            machine_image=self.mercury_machine_image,
+            instance_type=InstanceType("t4g.small"),
+            security_group=self.sensor_security_group,
+            detailed_monitoring=False,
+            spot_options=LaunchTemplateSpotOptions(max_price=0.007),
+            role=self.instance_role,
+            key_name="Lucas",
+            user_data=UserData.for_linux(),
+        )
+
+    def build_instance_role(self) -> Role:
+        name = f"{self.name}InstanceRole"
+        return Role(
+            self,
+            name,
+            role_name=name,
+            assumed_by=ServicePrincipal("ec2.amazonaws.com"),
+        )
+
+    @property
     def mercury_machine_image(self) -> MachineImage:
         return MachineImage.latest_amazon_linux(
             generation=AmazonLinuxGeneration.AMAZON_LINUX_2,
             cpu_type=AmazonLinuxCpuType.ARM_64,
             kernel=AmazonLinuxKernel.KERNEL5_X,
-
         )
 
     @property
     def instance_init_config(self) -> CloudFormationInit:
+        rpm_name = "mercury-2.5.10-1.el7.aarch64.rpm"
+        rpm_path = f"mercury-package/{rpm_name}"
         return CloudFormationInit.from_elements(
             InitCommand.shell_command(
                 "curl https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh | sh"
             ),
-            InitPackage.rpm("fluent-bit"),
+            InitCommand.shell_command("yum update -y"),
+            InitCommand.shell_command("yum install htop fluent-bit -y"),
+            InitCommand.shell_command(
+                f"aws s3 cp {self.artifacts_bucket.s3_url_for_object(key=rpm_path)} /tmp/{rpm_name}"
+            ),
+            InitCommand.shell_command(f"rpm -i /tmp/{rpm_name}"),
+            InitCommand.shell_command("sed -i 's/ens33/eth0/g' /etc/mercury/mercury.cfg"),
+            InitCommand.shell_command("sed -i 's/cpu/1/g' /etc/mercury/mercury.cfg"),
             InitFile.from_string("/etc/fluent-bit/fluent-bit.conf", self.fluent_bit_config),
             InitFile.from_string("/etc/fluent-bit/parsers.conf", self.fluent_bit_parser),
+            InitService.enable("fluent-bit", enabled=True),
+            InitService.enable("mercury", enabled=True),
         )
 
     @property
@@ -147,22 +173,7 @@ class MercuryStack(Stack):
             Time_Format %s.%6"
         """
 
-    @property
-    def mercury_user_data(self) -> UserData:
-        # TODO set this to be the latest build from codebuild
-        rpm_name = "mercury_sensor_setup.sh"
-        user_data = UserData.for_linux()
-        user_data.add_commands(
-            f'export REGION="{self.region}"',
-            f'export FIREHOSE="{self.firehose.delivery_stream_name}"',
-            f"aws s3 cp {self.artifacts_bucket.s3_url_for_object(key=rpm_name)} /tmp/{rpm_name}",
-        )
-        with open("installables/mercury_sensor_setup.sh") as fp:
-            for line in fp.read().splitlines():
-                user_data.add_commands(line)
-        return user_data
-
-    @property
+    @cached_property
     def sensor_security_group(self) -> SecurityGroup:
         sg = build_security_group(self, vpc=self.vpc, name=self.name)
         sg.add_ingress_rule(peer=Peer.any_ipv4(), connection=Port.all_traffic())
