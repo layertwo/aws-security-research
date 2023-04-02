@@ -98,12 +98,11 @@ class MercuryStack(Stack):
             self,
             f"{self.name}LaunchTemplate",
             machine_image=self.mercury_machine_image,
-            instance_type=InstanceType("t4g.small"),
+            instance_type=InstanceType("t4g.micro"),
             security_group=self.sensor_security_group,
             detailed_monitoring=False,
             spot_options=LaunchTemplateSpotOptions(max_price=0.007),
             role=self.instance_role,
-            key_name="Lucas",
             user_data=UserData.for_linux(),
         )
 
@@ -126,7 +125,7 @@ class MercuryStack(Stack):
 
     @property
     def instance_init_config(self) -> CloudFormationInit:
-        rpm_name = "mercury-2.5.10-1.el7.aarch64.rpm"
+        rpm_name = "mercury-2.5.16-1.el7.aarch64.rpm"
         rpm_path = f"mercury-package/{rpm_name}"
         return CloudFormationInit.from_elements(
             InitCommand.shell_command(
