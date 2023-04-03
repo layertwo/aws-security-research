@@ -1,20 +1,13 @@
 from typing import Dict, List
 
-from aws_cdk import Duration, Stack
-from aws_cdk.aws_codebuild import (
-    Artifacts,
-    BuildEnvironment,
-    BuildSpec,
-    Cache,
-    ComputeType,
-    LinuxBuildImage,
-    LocalCacheMode,
-    Project,
-    Source,
-)
-from aws_cdk.aws_events import Rule, Schedule
-from aws_cdk.aws_events_targets import CodeBuildProject
-from aws_cdk.aws_s3 import LifecycleRule, StorageClass, Transition
+import aws_cdk.aws_codebuild as codebuild
+import aws_cdk.aws_codepipeline as codepipeline
+import aws_cdk.aws_codepipeline_actions as codepipeline_actions
+import aws_cdk.aws_events as events
+import aws_cdk.aws_events_targets as events_targets
+import aws_cdk.aws_s3 as s3
+import aws_cdk.aws_ssm as ssm
+from aws_cdk import Duration, SecretValue, Stack
 from constructs import Construct
 
 from lib.aws_common.s3 import SecureBucket
@@ -24,20 +17,81 @@ class MercuryCodeBuild(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        self.bucket = self.build_artifacts_bucket()
-        self.projects = self.build_projects()
-        self.rule = self.build_project_rule()
+        self.artifacts_bucket = self.build_bucket(
+            bucket_id="MercuryArtifactBucket", bucket_name="mercury-codebuild-artifacts"
+        )
+        self.package_bucket = self.build_bucket(
+            bucket_id="MercuryPackageBucket", bucket_name="mercury-package-bucket"
+        )
+        pipeline = codepipeline.Pipeline(
+            self,
+            "CodePipeline",
+            pipeline_name="MercuryPipeline",
+            artifact_bucket=self.artifacts_bucket,
+        )
 
-    def build_artifacts_bucket(self) -> SecureBucket:
+        # Add a source stage to the pipeline
+        source_output = codepipeline.Artifact("SourceArtifact")
+        source_action = codepipeline_actions.GitHubSourceAction(
+            action_name="GitHub_Source",
+            owner="cisco",
+            repo="mercury",
+            oauth_token=SecretValue.secrets_manager("layertwo-github-secret"),
+            branch="main",
+            trigger=codepipeline_actions.GitHubTrigger.POLL,
+            output=source_output,
+        )
+        pipeline.add_stage(
+            stage_name="Source",
+            actions=[source_action],
+        )
+
+        # Add a build stage to the pipeline
+        project = self.build_project(arch="arm")
+        build_output = codepipeline.Artifact("MercuryBuildArtifact")
+        build_action = codepipeline_actions.CodeBuildAction(
+            action_name="CodeBuild",
+            project=project,
+            input=source_output,
+            outputs=[build_output],
+        )
+        pipeline.add_stage(
+            stage_name="Build",
+            actions=[build_action],
+        )
+
+        # Create an SSM parameter to store the artifact name
+        ssm_parameter = ssm.StringParameter(
+            self,
+            "MercurySsmParameter",
+            parameter_name="MercurySsmParameter",
+            string_value=build_output.at_path("mercury-1.0.rpm").location,
+        )
+
+        # Grant the CodeBuild project permission to write to the SSM parameter
+        ssm_parameter.grant_write(project)
+
+        # S3 Deploy
+        s3_deploy_action = codepipeline_actions.S3DeployAction(
+            action_name="S3Deploy",
+            bucket=self.package_bucket,
+            input=build_output,
+        )
+
+        # Add Deploy stage to the pipeline
+        pipeline.add_stage(stage_name="Deploy", actions=[s3_deploy_action])
+
+    def build_bucket(self, bucket_id: str, bucket_name: str) -> SecureBucket:
+        """Build bucket to store CodeBuild artifacts"""
         return SecureBucket(
             self,
-            bucket_id="MercuryArtifactBucket",
-            bucket_name="mercury-codebuild-artifacts",
+            bucket_id=bucket_id,
+            bucket_name=bucket_name,
             lifecycle_rules=[
-                LifecycleRule(
+                s3.LifecycleRule(
                     transitions=[
-                        Transition(
-                            storage_class=StorageClass.ONE_ZONE_INFREQUENT_ACCESS,
+                        s3.Transition(
+                            storage_class=s3.StorageClass.ONE_ZONE_INFREQUENT_ACCESS,
                             transition_after=Duration.days(30),
                         )
                     ]
@@ -45,47 +99,37 @@ class MercuryCodeBuild(Stack):
             ],
         )
 
-    def build_project_rule(self) -> Rule:
-        return Rule(
-            self,
-            "MercuryCodeBuildRule",
-            rule_name="mercury-codebuild-rule",
-            schedule=Schedule.rate(Duration.days(7)),
-            targets=[CodeBuildProject(proj) for proj in self.projects],
-        )
-
-    def build_projects(self) -> List[Project]:
+    def build_project(self, arch: str = "x86") -> codebuild.Project:
         environments: Dict[str, LinuxBuildImage] = {
-            "x86": LinuxBuildImage.AMAZON_LINUX_2_4,
-            "arm": LinuxBuildImage.AMAZON_LINUX_2_ARM_2,
+            "x86": codebuild.LinuxBuildImage.AMAZON_LINUX_2_4,
+            "arm": codebuild.LinuxBuildImage.AMAZON_LINUX_2_ARM_2,
         }
 
-        projects = []
-        for arch, image in environments.items():
-            proj = Project(
-                self,
-                f"MercuryProject{arch.capitalize()}",
-                build_spec=self.build_spec,
-                source=self.source,
-                concurrent_build_limit=1,
-                environment=BuildEnvironment(build_image=image, compute_type=ComputeType.SMALL),
-                project_name=f"mercury-codebuild-{arch}",
-                cache=Cache.local(LocalCacheMode.SOURCE),
-                artifacts=Artifacts.s3(
-                    bucket=self.bucket,
-                    include_build_id=False,
-                    package_zip=False,
-                ),
-            )
-            projects.append(proj)
-        return projects
+        image = environments[arch]
+        return codebuild.Project(
+            self,
+            f"MercuryProject{arch.capitalize()}",
+            build_spec=self.build_spec,
+            source=self.source,
+            concurrent_build_limit=1,
+            environment=codebuild.BuildEnvironment(
+                build_image=image, compute_type=codebuild.ComputeType.SMALL
+            ),
+            project_name=f"mercury-codebuild-{arch}",
+            cache=codebuild.Cache.local(codebuild.LocalCacheMode.SOURCE),
+            artifacts=codebuild.Artifacts.s3(
+               bucket=self.artifacts_bucket,
+               include_build_id=False,
+               package_zip=False,
+            ),
+        )
 
     @property
-    def source(self) -> Source:
-        return Source.git_hub(owner="cisco", repo="mercury", clone_depth=1)
+    def source(self) -> codebuild.Source:
+        return codebuild.Source.git_hub(owner="cisco", repo="mercury", clone_depth=1)
 
     @property
-    def build_spec(self) -> BuildSpec:
+    def build_spec(self) -> codebuild.BuildSpec:
         yum_deps = [
             "gcc10",
             "gcc10-c++",
@@ -97,7 +141,7 @@ class MercuryCodeBuild(Stack):
             "rpm-build",
             "squashfs-tools",
         ]
-        return BuildSpec.from_object(
+        return codebuild.BuildSpec.from_object(
             {
                 "version": "0.2",
                 "env": {"variables": {"CC": "/usr/bin/gcc10-gcc", "CXX": "/usr/bin/gcc10-c++"}},
