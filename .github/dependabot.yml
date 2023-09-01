@@ -8,4 +8,8 @@ updates:
   - package-ecosystem: "pip" # See documentation for possible values
     directory: "/" # Location of package manifests
     schedule:
-      interval: "monthly"
+      interval: "weekly"
+    ignore:
+     - dependency-name: aws-cdk-lib
+     - dependency-name: aws-cdk.aws-kinesisfirehose-destinations-alpha
+     - dependency-name: aws-cdk.aws-kinesisfirehose-alpha
