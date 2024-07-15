@@ -4,4 +4,4 @@ aws-cdk.aws-kinesisfirehose-destinations-alpha==2.90.0a0
 constructs==10.3.0
 black==24.4.2
 isort==5.13.2
-pyproject-flake8==6.1.0
+pyproject-flake8==7.0.0
